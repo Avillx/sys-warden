@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"syscall"
 	"unsafe"
@@ -115,4 +120,101 @@ func (o *FileObserver) AwaitUpdate() Update {
 func (o *FileObserver) Release() {
 	syscall.InotifyRmWatch(o.fileDescriptiorID, uint32(o.watchDescriptiorID))
 	syscall.Close(o.fileDescriptiorID)
+}
+
+// ////////////////////////////////////////////////////
+//
+
+type ContainerObserver struct {
+	SocketClient http.Client
+	SocketReader io.ReadCloser
+}
+
+func NewContainerObserver(containerID string) (*ContainerObserver, error) {
+	socketClient := getSocketClient()
+	dockerVersion, err := getDockerVersion(socketClient)
+
+	if err != nil {
+		return &ContainerObserver{}, err
+	}
+	socketReader, err := getContainerReader(containerID, dockerVersion, socketClient)
+
+	if err != nil {
+		return &ContainerObserver{}, err
+	}
+
+	return &ContainerObserver{
+		SocketClient: socketClient,
+		SocketReader: socketReader,
+	}, nil
+}
+
+func (o *ContainerObserver) AwaitUpdate() Update {
+	header := make([]byte, 8)
+
+	_, err := io.ReadFull(o.SocketReader, header)
+	if err != nil {
+		return nil //err // Вернет ошибку при разрыве соединения (EOF и др.)
+	}
+
+	frameSize := binary.BigEndian.Uint32(header[4:])
+	content := make([]byte, frameSize)
+
+	_, err = io.ReadFull(o.SocketReader, content)
+	if err != nil {
+		return nil
+	}
+
+	return Update{string(content)}
+}
+
+func (o *ContainerObserver) Release() {
+	// must unlock io.ReadAll
+	o.SocketReader.Close()
+}
+
+func getSocketClient() http.Client {
+	socketPath := "/var/run/docker.sock"
+	return http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", socketPath)
+			},
+		},
+	}
+}
+
+type dockerVersion struct {
+	Version string `json:"Version"`
+}
+
+func getDockerVersion(SocketClient http.Client) (string, error) {
+	resp, err := SocketClient.Get("http://localhost/version")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", err
+	}
+
+	var v dockerVersion
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		return "", err
+	}
+
+	return v.Version, nil
+}
+
+func getContainerReader(containerID, dockerVersion string, socketClient http.Client) (io.ReadCloser, error) {
+
+	url := fmt.Sprintf("http://localhost/%s/containers/%s/logs?stdout=1&stderr=1&follow=1", dockerVersion, containerID)
+
+	resp, err := socketClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Body, nil
 }
