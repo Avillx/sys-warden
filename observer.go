@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"syscall"
 	"unsafe"
@@ -84,21 +83,16 @@ func NewFileObserver(f FilePath) (*FileObserver, error) {
 		return &FileObserver{}, err
 	}
 
-	offset, _ := file.Seek(0, io.SeekCurrent)
+	stat, _ := file.Stat()
 
 	return &FileObserver{
 		fileDescriptiorID:  fd,
 		watchDescriptiorID: wd,
 		file:               file,
-		offset:             offset,
+		offset:             stat.Size(),
 		buffer:             make([]byte, 4096),
 		updateChan:         make(chan []string),
 	}, nil
-}
-
-func (o *FileObserver) Release() {
-	syscall.InotifyRmWatch(o.fileDescriptiorID, uint32(o.watchDescriptiorID))
-	syscall.Close(o.fileDescriptiorID)
 }
 
 func (o *FileObserver) AwaitInvoke() {
@@ -112,10 +106,14 @@ func (o *FileObserver) AwaitInvoke() {
 	for pos < uint32(n) {
 		event := (*syscall.InotifyEvent)(unsafe.Pointer(&o.buffer[pos]))
 
-		newContent := make([]byte, 1024)
-		bytesRead, _ := o.file.ReadAt(newContent, o.offset)
+		newContentBuf := make([]byte, 1024)
+		bytesRead, _ := o.file.ReadAt(newContentBuf, o.offset)
+		if bytesRead == 0 {
 
-		o.updateChan <- []string{string(newContent[:bytesRead])}
+			return
+		}
+
+		o.updateChan <- []string{string(newContentBuf[:bytesRead])}
 
 		o.offset += int64(bytesRead)
 
@@ -126,4 +124,9 @@ func (o *FileObserver) AwaitInvoke() {
 func (o *FileObserver) GetUpdateChan() UpdatesChannel {
 
 	return UpdatesChannel(o.updateChan)
+}
+
+func (o *FileObserver) Release() {
+	syscall.InotifyRmWatch(o.fileDescriptiorID, uint32(o.watchDescriptiorID))
+	syscall.Close(o.fileDescriptiorID)
 }
