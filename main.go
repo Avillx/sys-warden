@@ -16,7 +16,7 @@ func CreateTempoFileObserver() {
 	wo := WrappedObserver{
 		Name:     "Tempo",
 		Observer: o,
-		OnInvoke: func(d Details) {
+		OnUpdate: func(d Update) {
 			fmt.Print(d)
 		},
 		Cancel: cancel,

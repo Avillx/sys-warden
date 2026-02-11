@@ -8,16 +8,15 @@ import (
 	"unsafe"
 )
 
-type FileUpdates UpdatesChannel
-type UpdatesChannel chan []string
 type FilePath string
 type Details []string
-type OnInvokeCallback func(d Details)
+type Update []string
+type OnUpdateCallback func(u Update)
 
 type WrappedObserver struct {
 	Name     string
 	Observer Observer
-	OnInvoke OnInvokeCallback
+	OnUpdate OnUpdateCallback
 	Cancel   context.CancelFunc
 }
 
@@ -34,26 +33,17 @@ func (w *WrappedObserver) Run(ctx context.Context) {
 				return
 			}
 
-			w.Observer.AwaitInvoke()
+			update := w.Observer.AwaitUpdate()
 
-		}
-	}()
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case u := <-w.Observer.GetUpdateChan():
-				w.OnInvoke(u)
+			if len(update) > 0 {
+				w.OnUpdate(update)
 			}
 		}
 	}()
 }
 
 type Observer interface {
-	AwaitInvoke()
-	GetUpdateChan() UpdatesChannel
+	AwaitUpdate() Update
 	Release()
 }
 
@@ -63,7 +53,6 @@ type FileObserver struct {
 	file               *os.File
 	offset             int64
 	buffer             []byte
-	updateChan         FileUpdates
 }
 
 func NewFileObserver(f FilePath) (*FileObserver, error) {
@@ -91,16 +80,16 @@ func NewFileObserver(f FilePath) (*FileObserver, error) {
 		file:               file,
 		offset:             stat.Size(),
 		buffer:             make([]byte, 4096),
-		updateChan:         make(chan []string),
 	}, nil
 }
 
-func (o *FileObserver) AwaitInvoke() {
+func (o *FileObserver) AwaitUpdate() Update {
 	n, err := syscall.Read(o.fileDescriptiorID, o.buffer)
 
 	if err != nil {
 		fmt.Errorf(err.Error())
 	}
+	update := Update{}
 
 	var pos uint32
 	for pos < uint32(n) {
@@ -110,20 +99,17 @@ func (o *FileObserver) AwaitInvoke() {
 		bytesRead, _ := o.file.ReadAt(newContentBuf, o.offset)
 		if bytesRead == 0 {
 
-			return
+			continue
 		}
 
-		o.updateChan <- []string{string(newContentBuf[:bytesRead])}
+		update = append(update, string(newContentBuf[:bytesRead]))
 
 		o.offset += int64(bytesRead)
 
 		pos += syscall.SizeofInotifyEvent + event.Len
 	}
-}
 
-func (o *FileObserver) GetUpdateChan() UpdatesChannel {
-
-	return UpdatesChannel(o.updateChan)
+	return update
 }
 
 func (o *FileObserver) Release() {
