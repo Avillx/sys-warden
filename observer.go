@@ -126,6 +126,7 @@ func (o *FileObserver) Release() {
 //
 
 type ContainerObserver struct {
+	ContainerID  string
 	SocketClient http.Client
 	SocketReader io.ReadCloser
 }
@@ -144,15 +145,17 @@ func NewContainerObserver(containerID string) (*ContainerObserver, error) {
 	}
 
 	return &ContainerObserver{
+		ContainerID:  containerID,
 		SocketClient: socketClient,
 		SocketReader: socketReader,
 	}, nil
 }
 
 func (o *ContainerObserver) AwaitUpdate() Update {
+	readerx, _ := getContainerReader(o.ContainerID, "28.5.2", o.SocketClient)
 	header := make([]byte, 8)
 
-	_, err := io.ReadFull(o.SocketReader, header)
+	_, err := io.ReadFull(readerx, header)
 	if err != nil {
 		return nil //err // Вернет ошибку при разрыве соединения (EOF и др.)
 	}
@@ -160,8 +163,13 @@ func (o *ContainerObserver) AwaitUpdate() Update {
 	frameSize := binary.BigEndian.Uint32(header[4:])
 	content := make([]byte, frameSize)
 
-	_, err = io.ReadFull(o.SocketReader, content)
-	if err != nil {
+	_, err = io.ReadFull(readerx, content)
+	// if err != nil {
+	// 	return nil
+	// }
+
+	if len(content) <= 0 {
+
 		return nil
 	}
 
